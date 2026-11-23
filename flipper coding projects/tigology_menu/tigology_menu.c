@@ -132,9 +132,16 @@ static void tigology_launch_nfc(TigologyApp* app, const char* path, const char* 
         return;
     }
 
+    /* loader_start() cannot be used here: per the official 1.5.1 loader source,
+     * loader_do_is_locked() is `loader->app.thread != NULL` and
+     * loader_do_start_by_name() returns LoaderStatusErrorAppStarted ("Loader is
+     * locked") while any app, including this menu, is running. Queue the launch
+     * to run after this app closes, then close the menu. After the NFC app exits
+     * you land on the Flipper desktop, not back in this menu. */
     Loader* loader = furi_record_open(RECORD_LOADER);
-    loader_start(loader, "NFC", path, NULL);
+    loader_enqueue_launch(loader, "NFC", path, LoaderDeferredLaunchFlagGui);
     furi_record_close(RECORD_LOADER);
+    view_dispatcher_stop(app->view_dispatcher);
 }
 
 /* ---- generic "coming soon / info" screen ---- */
