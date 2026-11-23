@@ -432,7 +432,7 @@ int32_t meta_bug_detector_main(void* p) {
                 if(app->threshold_idx > 0) app->threshold_idx--;
                 break;
             case InputKeyRight:
-                if(app->threshold_idx + 1 < COUNT_OF(thresholds)) app->threshold_idx++;
+                if(app->threshold_idx + 1 < (int)COUNT_OF(thresholds)) app->threshold_idx++;
                 break;
             case InputKeyUp:
             case InputKeyDown:
