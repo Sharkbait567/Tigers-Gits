@@ -15,7 +15,7 @@ note will fire often, raise the threshold with Left).
 
 ## Apple detection
 Counts Apple devices (company 0x004C) in range, shown as "Apple nearby: N (best dBm)". Hold OK to also alert
-when a new one enters range (off by default). It cannot tell an iPhone from a Mac, Watch, AirPods or AirTag,
+when a new one enters range (on by default; hold OK toggles). It cannot tell an iPhone from a Mac, Watch, AirPods or AirTag,
 and Apple rotates addresses, so the count is approximate. Expect many in dense areas.
 
 ## Find My sweep (hidden tracker check)
