@@ -1,0 +1,12 @@
+App(
+    appid="tigology_tap",
+    name="Tigology Tap",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="tigology_tap_main",
+    requires=["gui", "notification"],
+    stack_size=2 * 1024,
+    sources=["tigology_tap.c"],
+    fap_category="NFC",
+    fap_version="0.1",
+    fap_description="Emulates an NFC tag that opens tigologyverse.com when a phone taps the Flipper.",
+)
