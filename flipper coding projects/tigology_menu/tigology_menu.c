@@ -44,6 +44,8 @@
 #define BLINQ_NFC_PATH EXT_PATH("nfc/blinq_card.nfc")
 #define BRAIN_FERT_NFC_PATH EXT_PATH("nfc/brain_fertilizer_hub.nfc")
 #define BS_BINGO_NFC_PATH EXT_PATH("nfc/bs_bingo.nfc")
+/* fap_category="Bluetooth" installs to /ext/apps/Bluetooth/ */
+#define META_BUG_FAP_PATH EXT_PATH("apps/Bluetooth/meta_bug_detector.fap")
 
 typedef enum {
     TigViewSubmenu,
@@ -105,6 +107,10 @@ enum {
     MarketingIdxTigologyLink,
 };
 enum {
+    WorkshopIdxBench,
+    WorkshopIdxMetaBug,
+};
+enum {
     BFIdxHubNfc,
     BFIdxBsBingo,
     BFIdxQrConnect,
@@ -135,6 +141,36 @@ static void tigology_launch_nfc(TigologyApp* app, const char* path, const char* 
     Loader* loader = furi_record_open(RECORD_LOADER);
     loader_start(loader, "NFC", path, NULL);
     furi_record_close(RECORD_LOADER);
+}
+
+/* Launch an external app (.fap) by path.
+ *
+ * Why enqueue + stop instead of loader_start(): per the official 1.5.1 loader
+ * source (applications/services/loader/loader.c), loader_do_is_locked() is
+ * `loader->app.thread != NULL`, and loader_do_start_by_name() returns
+ * LoaderStatusErrorAppStarted ("Loader is locked") while any app, including
+ * this menu, is running. loader_enqueue_launch() queues the launch to run
+ * after the current app closes, so we queue it and then close the menu.
+ * The same enqueue API exists in the Momentum tree the BLE scan patch targets.
+ * When the launched app exits you land back on the Flipper desktop, not here. */
+static void tigology_launch_fap(TigologyApp* app, const char* path, const char* friendly_name) {
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+    bool exists = storage_file_exists(storage, path);
+    furi_record_close(RECORD_STORAGE);
+
+    if(!exists) {
+        FuriString* msg = furi_string_alloc_printf(
+            "Not installed yet.\n\nCopy the .fap to:\n%s\n\nNeeds the patched\nMomentum firmware with\nfull BLE stack.",
+            path);
+        tigology_show_info(app, friendly_name, furi_string_get_cstr(msg));
+        furi_string_free(msg);
+        return;
+    }
+
+    Loader* loader = furi_record_open(RECORD_LOADER);
+    loader_enqueue_launch(loader, path, NULL, LoaderDeferredLaunchFlagGui);
+    furi_record_close(RECORD_LOADER);
+    view_dispatcher_stop(app->view_dispatcher);
 }
 
 /* ---- generic "coming soon / info" screen ---- */
@@ -262,12 +298,19 @@ static void tigology_submenu_callback(void* context, uint32_t index) {
         break;
 
     case MenuWorkshop:
-        tigology_show_info(
-            app,
-            "Workshop",
-            "Open bench.\n\n"
-            "New modes get\nworkshopped here before\n"
-            "they earn a permanent\nmenu slot.");
+        switch(index) {
+        case WorkshopIdxBench:
+            tigology_show_info(
+                app,
+                "Workshop",
+                "Open bench.\n\n"
+                "New modes get\nworkshopped here before\n"
+                "they earn a permanent\nmenu slot.");
+            break;
+        case WorkshopIdxMetaBug:
+            tigology_launch_fap(app, META_BUG_FAP_PATH, "Meta-Bug Detector");
+            break;
+        }
         break;
     }
 }
@@ -374,7 +417,14 @@ static void tigology_build_menu(TigologyApp* app, MenuLevel level) {
 
     case MenuWorkshop:
         submenu_set_header(app->submenu, "Workshop");
-        submenu_add_item(app->submenu, "Open Bench", 0, tigology_submenu_callback, app);
+        submenu_add_item(
+            app->submenu, "Open Bench", WorkshopIdxBench, tigology_submenu_callback, app);
+        submenu_add_item(
+            app->submenu,
+            "Meta-Bug Detector",
+            WorkshopIdxMetaBug,
+            tigology_submenu_callback,
+            app);
         break;
     }
 
