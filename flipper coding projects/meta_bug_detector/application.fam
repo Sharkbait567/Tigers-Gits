@@ -1,0 +1,12 @@
+App(
+    appid="meta_bug_detector",
+    name="Meta-Bug Detector",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="meta_bug_detector_main",
+    requires=["gui", "storage", "notification"],
+    stack_size=4 * 1024,
+    sources=["*.c"],
+    fap_category="Bluetooth",
+    fap_version="0.1",
+    fap_description="Chimes when Meta/Snap camera glasses, Apple devices or Find My trackers are nearby. Needs the patched full-stack BLE firmware.",
+)
