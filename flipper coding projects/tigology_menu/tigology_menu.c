@@ -30,6 +30,8 @@
  */
 
 #include <furi.h>
+#include <string.h>
+#include <strings.h>
 #include <furi_hal.h>
 #include <gui/gui.h>
 #include <gui/view_dispatcher.h>
@@ -45,6 +47,13 @@
 #define BRAIN_FERT_NFC_PATH EXT_PATH("nfc/brain_fertilizer_hub.nfc")
 #define BS_BINGO_NFC_PATH EXT_PATH("nfc/bs_bingo.nfc")
 
+/* Apps mirror: reads the real folders under /ext/apps at runtime, the same
+ * folders the Flipper's built-in Apps menu shows, so nothing is hardcoded. */
+#define APPS_ROOT EXT_PATH("apps")
+#define APPS_MAX_CATS 16
+#define APPS_MAX_ITEMS 32
+#define APPS_NAME_LEN 40
+
 typedef enum {
     TigViewSubmenu,
     TigViewWidget,
@@ -57,6 +66,8 @@ typedef enum {
     MenuMarketing,
     MenuBrainFertilizer,
     MenuWorkshop,
+    MenuApps,
+    MenuAppsCat,
 } MenuLevel;
 
 typedef struct {
@@ -66,6 +77,12 @@ typedef struct {
     Widget* widget;
     NotificationApp* notifications;
     MenuLevel current_menu;
+    /* Apps mirror state (heap, not stack: this app's stack is small) */
+    char cat_names[APPS_MAX_CATS][APPS_NAME_LEN];
+    size_t cat_count;
+    char app_names[APPS_MAX_ITEMS][APPS_NAME_LEN];
+    size_t app_count;
+    char sel_cat[APPS_NAME_LEN];
 } TigologyApp;
 
 /* Single-instance app pointer, read by view-level previous_callbacks.
@@ -89,6 +106,7 @@ enum {
     MainIdxMarketing,
     MainIdxBrainFertilizer,
     MainIdxWorkshop,
+    MainIdxApps,
     MainIdxAbout,
 };
 
@@ -144,6 +162,57 @@ static void tigology_launch_nfc(TigologyApp* app, const char* path, const char* 
     view_dispatcher_stop(app->view_dispatcher);
 }
 
+/* Scan a directory. want_dirs=true lists sub-folders (skips dot-names);
+ * want_dirs=false lists *.fap files. Sorted case-insensitively like the
+ * Apps menu. Returns the count (capped at max). */
+static size_t tigology_scan(const char* dir, bool want_dirs, char (*out)[APPS_NAME_LEN], size_t max) {
+    size_t n = 0;
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+    File* f = storage_file_alloc(storage);
+    if(storage_dir_open(f, dir)) {
+        FileInfo info;
+        char name[APPS_NAME_LEN];
+        while(n < max && storage_dir_read(f, &info, name, sizeof(name))) {
+            if(name[0] == '.') continue;
+            bool is_dir = file_info_is_dir(&info);
+            if(want_dirs) {
+                if(!is_dir) continue;
+            } else {
+                size_t len = strlen(name);
+                if(is_dir || len < 5 || strcasecmp(name + len - 4, ".fap") != 0) continue;
+            }
+            strlcpy(out[n], name, APPS_NAME_LEN);
+            n++;
+        }
+    }
+    storage_dir_close(f);
+    storage_file_free(f);
+    furi_record_close(RECORD_STORAGE);
+
+    for(size_t i = 1; i < n; i++) {
+        char tmp[APPS_NAME_LEN];
+        strlcpy(tmp, out[i], APPS_NAME_LEN);
+        size_t j = i;
+        while(j > 0 && strcasecmp(out[j - 1], tmp) > 0) {
+            strlcpy(out[j], out[j - 1], APPS_NAME_LEN);
+            j--;
+        }
+        strlcpy(out[j], tmp, APPS_NAME_LEN);
+    }
+    return n;
+}
+
+/* Launch an installed app by full path, same deferred-launch route as the
+ * NFC launchers, then close the menu. */
+static void tigology_launch_fap(TigologyApp* app, const char* cat, const char* file) {
+    FuriString* path = furi_string_alloc_printf("%s/%s/%s", APPS_ROOT, cat, file);
+    Loader* loader = furi_record_open(RECORD_LOADER);
+    loader_enqueue_launch(loader, furi_string_get_cstr(path), NULL, LoaderDeferredLaunchFlagGui);
+    furi_record_close(RECORD_LOADER);
+    furi_string_free(path);
+    view_dispatcher_stop(app->view_dispatcher);
+}
+
 /* ---- generic "coming soon / info" screen ---- */
 static uint32_t tigology_info_back(void* context) {
     UNUSED(context);
@@ -182,12 +251,15 @@ static void tigology_submenu_callback(void* context, uint32_t index) {
         case MainIdxWorkshop:
             tigology_build_menu(app, MenuWorkshop);
             break;
+        case MainIdxApps:
+            tigology_build_menu(app, MenuApps);
+            break;
         case MainIdxAbout:
             tigology_show_info(
                 app,
                 "Tigology Menu",
                 "Gauntlet 1A mode-switch\nlauncher.\n\n"
-                "Paladin / Mount /\nMarketing / Brain\nFertilizer modes.\n\n"
+                "Paladin / Mount /\nMarketing / Brain\nFertilizer modes, plus\nApps: a live mirror\nof /ext/apps.\n\n"
                 "PAL-G1A-001 doctrine\nlayer, software side.\n\n"
                 "github: Sharkatech\nIndustries");
             break;
@@ -276,6 +348,19 @@ static void tigology_submenu_callback(void* context, uint32_t index) {
             "New modes get\nworkshopped here before\n"
             "they earn a permanent\nmenu slot.");
         break;
+
+    case MenuApps:
+        if(index < app->cat_count) {
+            strlcpy(app->sel_cat, app->cat_names[index], APPS_NAME_LEN);
+            tigology_build_menu(app, MenuAppsCat);
+        }
+        break;
+
+    case MenuAppsCat:
+        if(index < app->app_count) {
+            tigology_launch_fap(app, app->sel_cat, app->app_names[index]);
+        }
+        break;
     }
 }
 
@@ -291,7 +376,8 @@ static uint32_t tigology_submenu_back(void* context) {
          * exits the app (see tigology_navigation_callback below). */
         return VIEW_IGNORE;
     }
-    tigology_build_menu(app, MenuMain);
+    /* Apps > category goes back to the category list; everything else to Main. */
+    tigology_build_menu(app, app->current_menu == MenuAppsCat ? MenuApps : MenuMain);
     return TigViewSubmenu;
 }
 
@@ -324,6 +410,7 @@ static void tigology_build_menu(TigologyApp* app, MenuLevel level) {
             app);
         submenu_add_item(
             app->submenu, "Workshop", MainIdxWorkshop, tigology_submenu_callback, app);
+        submenu_add_item(app->submenu, "Apps", MainIdxApps, tigology_submenu_callback, app);
         submenu_add_item(app->submenu, "About", MainIdxAbout, tigology_submenu_callback, app);
         break;
 
@@ -383,6 +470,38 @@ static void tigology_build_menu(TigologyApp* app, MenuLevel level) {
         submenu_set_header(app->submenu, "Workshop");
         submenu_add_item(app->submenu, "Open Bench", 0, tigology_submenu_callback, app);
         break;
+
+    case MenuApps:
+        submenu_set_header(app->submenu, "Apps");
+        app->cat_count =
+            tigology_scan(APPS_ROOT, true, app->cat_names, APPS_MAX_CATS);
+        for(size_t i = 0; i < app->cat_count; i++) {
+            submenu_add_item(app->submenu, app->cat_names[i], i, tigology_submenu_callback, app);
+        }
+        if(app->cat_count == 0) {
+            submenu_add_item(app->submenu, "(no folders found)", 0, tigology_submenu_callback, app);
+        }
+        break;
+
+    case MenuAppsCat: {
+        submenu_set_header(app->submenu, app->sel_cat);
+        FuriString* dir = furi_string_alloc_printf("%s/%s", APPS_ROOT, app->sel_cat);
+        app->app_count =
+            tigology_scan(furi_string_get_cstr(dir), false, app->app_names, APPS_MAX_ITEMS);
+        furi_string_free(dir);
+        for(size_t i = 0; i < app->app_count; i++) {
+            /* show the file name without ".fap" */
+            char label[APPS_NAME_LEN];
+            strlcpy(label, app->app_names[i], APPS_NAME_LEN);
+            size_t len = strlen(label);
+            if(len > 4) label[len - 4] = '\0';
+            submenu_add_item(app->submenu, label, i, tigology_submenu_callback, app);
+        }
+        if(app->app_count == 0) {
+            submenu_add_item(app->submenu, "(no apps here)", 0, tigology_submenu_callback, app);
+        }
+        break;
+    }
     }
 
     view_set_previous_callback(submenu_get_view(app->submenu), tigology_submenu_back);
@@ -392,6 +511,7 @@ static void tigology_build_menu(TigologyApp* app, MenuLevel level) {
 /* ---- app lifecycle ---- */
 static TigologyApp* tigology_app_alloc(void) {
     TigologyApp* app = malloc(sizeof(TigologyApp));
+    memset(app, 0, sizeof(TigologyApp));
     g_app = app;
 
     app->gui = furi_record_open(RECORD_GUI);
